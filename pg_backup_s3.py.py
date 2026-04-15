@@ -2,7 +2,7 @@
 import os
 import argparse
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 from dotenv import load_dotenv
@@ -29,6 +29,34 @@ s3_client = boto3.client(
     region_name=AWS_REGION
 )
 
+def cleanup_old_backups():
+    """Eliminar backups en S3 con más de 15 días de antigüedad"""
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=15)
+        response = s3_client.list_objects_v2(Bucket=S3_BUCKET)
+
+        if 'Contents' not in response:
+            return
+
+        to_delete = [
+            {'Key': obj['Key']}
+            for obj in response['Contents']
+            if obj['LastModified'] < cutoff
+        ]
+
+        if not to_delete:
+            print("No hay backups con más de 15 días para eliminar.")
+            return
+
+        s3_client.delete_objects(Bucket=S3_BUCKET, Delete={'Objects': to_delete})
+        print(f"Se eliminaron {len(to_delete)} backup(s) con más de 15 días:")
+        for obj in to_delete:
+            print(f"  - {obj['Key']}")
+
+    except ClientError as e:
+        print(f"Error al limpiar backups antiguos: {e}")
+
+
 def create_backup():
     """Crear un backup de la base de datos PostgreSQL y subirlo a S3"""
     try:
@@ -52,6 +80,9 @@ def create_backup():
         
         # Eliminar archivo local
         os.remove(backup_file)
+        
+        # Limpiar backups con más de 15 días
+        cleanup_old_backups()
         
     except subprocess.CalledProcessError as e:
         print(f"Error al crear el backup: {e}")
