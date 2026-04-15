@@ -2,7 +2,7 @@
 import os
 import argparse
 import subprocess
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 from dotenv import load_dotenv
@@ -29,37 +29,39 @@ s3_client = boto3.client(
     region_name=AWS_REGION
 )
 
+RETENTION_COUNT = 15
+
 def cleanup_old_backups():
-    """Eliminar backups en S3 con más de 15 días de antigüedad y reportar resultado"""
+    """Mantener solo los ultimos RETENTION_COUNT backups en S3, borrar el resto"""
     result = {
         'checked': 0,
-        'older_than_15_days': 0,
+        'excess': 0,
         'deleted': 0,
         'ok': True,
         'error': None,
     }
 
     try:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=15)
         paginator = s3_client.get_paginator('list_objects_v2')
         objects = []
 
         for page in paginator.paginate(Bucket=S3_BUCKET):
             objects.extend(page.get('Contents', []))
 
-        result['checked'] = len(objects)
+        # Solo backups de este script
+        backups = [obj for obj in objects if obj.get('Key', '').startswith('backup_')]
+        # Ordenar del mas reciente al mas antiguo
+        backups.sort(key=lambda o: o['LastModified'], reverse=True)
 
-        # Solo considerar archivos de backup esperados para la retención.
-        old_objects = [
-            obj for obj in objects
-            if obj.get('Key', '').startswith('backup_') and obj.get('LastModified') < cutoff
-        ]
-        result['older_than_15_days'] = len(old_objects)
+        result['checked'] = len(backups)
 
-        if not old_objects:
+        old_backups = backups[RETENTION_COUNT:]
+        result['excess'] = len(old_backups)
+
+        if not old_backups:
             return result
 
-        to_delete = [{'Key': obj['Key']} for obj in old_objects]
+        to_delete = [{'Key': obj['Key']} for obj in old_backups]
         delete_response = s3_client.delete_objects(
             Bucket=S3_BUCKET,
             Delete={'Objects': to_delete}
@@ -71,7 +73,7 @@ def cleanup_old_backups():
         result['deleted'] = len(deleted_items)
         if delete_errors:
             result['ok'] = False
-            result['error'] = f"S3 devolvió errores al borrar {len(delete_errors)} objeto(s)."
+            result['error'] = f"S3 errores al borrar {len(delete_errors)} objeto(s)."
 
         return result
 
@@ -111,10 +113,10 @@ def create_backup():
 
         # Limpiar backups antiguos y mostrar SIEMPRE el resultado en consola.
         cleanup_result = cleanup_old_backups()
-        print("--- Resumen de retencion S3 (15 dias) ---")
-        print(f"Objetos revisados en bucket: {cleanup_result['checked']}")
-        print(f"Backups con mas de 15 dias: {cleanup_result['older_than_15_days']}")
-        if cleanup_result['older_than_15_days'] == 0:
+        print(f"--- Retencion S3 (max {RETENTION_COUNT} backups) ---")
+        print(f"Backups en bucket: {cleanup_result['checked']}")
+        print(f"Backups sobrantes: {cleanup_result['excess']}")
+        if cleanup_result['excess'] == 0:
             print("Estado: no habia backups para borrar.")
         elif cleanup_result['ok']:
             print(f"Estado: borrado correcto ({cleanup_result['deleted']} eliminado(s)).")
