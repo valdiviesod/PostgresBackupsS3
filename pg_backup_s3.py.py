@@ -31,11 +31,13 @@ s3_client = boto3.client(
 
 def cleanup_old_backups():
     """Eliminar backups en S3 con más de 15 días de antigüedad"""
+    print("Verificando backups antiguos en S3...")
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(days=15)
         response = s3_client.list_objects_v2(Bucket=S3_BUCKET)
 
         if 'Contents' not in response:
+            print("No se encontraron backups en el bucket.")
             return
 
         to_delete = [
@@ -54,6 +56,8 @@ def cleanup_old_backups():
             print(f"  - {obj['Key']}")
 
     except ClientError as e:
+        print(f"Error al limpiar backups antiguos (ClientError): {e}")
+    except Exception as e:
         print(f"Error al limpiar backups antiguos: {e}")
 
 
